@@ -78,9 +78,9 @@ class TriggerEngine:
             self.writer.flush()
         return (train_accuracy,train_losses,test_accuracy,test_losses)
         
-    def save_experiment(self,model, experiment_name):
+    def save_experiment(self,model, experiment_name,path):
         print(f"Saving the model for {experiment_name}")
-        torch.save(model, './saved_models/{}.pt'.format(experiment_name))
+        torch.save(model, f'{path}/{experiment_name}.pt')
     
     def model_summary(self,model, input_size):
         result = summary(model, input_size=input_size)

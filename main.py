@@ -1,11 +1,11 @@
 import torchvision
-from dataloader.load_data import Cifar10DataLoader
+from dvutils.dataloader.load_data import Cifar10DataLoader
 import torch
 import torch.optim as optim
 import matplotlib.pyplot as plt
 from torch.optim.lr_scheduler import StepLR,OneCycleLR
-from utils import train as trn
-from utils import test as tst
+from dvutils.utils import train as trn
+from dvutils.utils import test as tst
 from torchsummary import summary
 import yaml
 from pprint import pprint

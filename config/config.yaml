@@ -4,8 +4,10 @@ model_params:
     model_dir: ./model/
     seed: 1
     dropout: 0.05
+data_augmentation:
+    type: CIFAR10Albumentation
 data_loader:
-    type: CIFAR10DataLoader
+    type: Cifar10DataLoader
     classes: ['plane', 'car', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
     args:
         batch_size: 256
@@ -13,9 +15,10 @@ data_loader:
         pin_memory: true
 criterion: CrossEntropyLoss
 optimizer : 
-    type: optim.SGD
+    type: optim.Adam
     args:
         lr: 0.01
+lr_scheduler: OneCycleLR
 training_params:
     epochs: 40
     l1_factor: 0

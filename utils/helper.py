@@ -9,8 +9,6 @@ import torch.nn as nn
 from torchvision import datasets, transforms
 from itertools import product
 
-
-
 def imshow(img):
     # functions to show an image
     fig, ax = plt.subplots(figsize=(12, 12))

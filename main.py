@@ -21,30 +21,32 @@ class TriggerEngine:
     def __init__(self, config):
         self.config = config
         self.loader = config['data_loader']['type']
-        self.cifar_dataset=eval(self.loader)(self.config)
+        self.image_dataset=eval(self.loader)(self.config)
         self.device = self.set_device()
-        self.class_names = self.config['data_loader']['classes']
         self.writer = SummaryWriter()
+        self.l2_factor = self.config['training_params']['l2_factor']
 
         
     def dataloader(self):
         #Get dataloaders
-        train_loader,test_loader = self.cifar_dataset.get_dataloader()
-        return train_loader,test_loader
-        
+        return self.image_dataset.get_dataloader()
+       
+    def get_classes(self): 
+        return self.image_dataset.classes()
         
     def set_device(self):
         use_cuda = torch.cuda.is_available()
         device = torch.device("cuda" if use_cuda else "cpu")
         return device
         
-    def run_experiment(self,model,train_loader,test_loader,best_lr):
+    def run_experiment(self,model,train_loader,test_loader,lrmin=None,lrmax=None):
         
         model.to(self.device) 
         dropout=self.config['model_params']['dropout']
         epochs=self.config['training_params']['epochs']
-        l2_factor = self.config['training_params']['l2_factor']
+        
         l1_factor = self.config['training_params']['l1_factor']
+        max_epoch = self.config['lr_finder']['max_epoch']
         
         criterion = nn.CrossEntropyLoss() if self.config['criterion'] == 'CrossEntropyLoss' else F.nll_loss()
         opt_func = optim.Adam if self.config['optimizer']['type'] == 'optim.Adam' else optim.SGD
@@ -60,18 +62,23 @@ class TriggerEngine:
         lrs=[]
             
         
-        #optimizer = optim.SGD(model.parameters(), lr=0.02, momentum=0.7,weight_decay=l2_factor)
-        optimizer = opt_func(model.parameters(), lr=lr, weight_decay=l2_factor)
         
-        if self.config['lr_scheduler'] == 'OneCycleLR': 
-            print("using OneCycleLR")
-            scheduler = OneCycleLR(optimizer=optimizer, max_lr=best_lr,
-                                  epochs=epochs, steps_per_epoch=len(train_loader),
-                                  pct_start=5/epochs, div_factor=10, final_div_factor=10)
-            #scheduler = OneCycleLR(optimizer, max_lr=lr,epochs=epochs,steps_per_epoch=len(train_loader))
+        if lrmax is not None:
+            optimizer = optim.SGD(model.parameters(), lr=lrmin, momentum=0.90,weight_decay=self.l2_factor)
+            if self.config['lr_scheduler'] == 'OneCycleLR': 
+                scheduler = OneCycleLR(optimizer=optimizer, max_lr=lrmax,
+                                      epochs=epochs, steps_per_epoch=len(train_loader),
+                                      pct_start=max_epoch/epochs,div_factor=8)
+            else:
+                scheduler = ReduceLROnPlateau(optimizer, factor=0.2, patience=3,verbose=True,mode='max')
         else:
-            scheduler = ReduceLROnPlateau(optimizer, factor=0.2, patience=3,verbose=True,mode='max')
+            optimizer = opt_func(model.parameters(), lr=lr, momentum=0.90,weight_decay=self.l2_factor)
+            if self.config['lr_scheduler'] == 'OneCycleLR':
+                scheduler = OneCycleLR(optimizer, max_lr=lr,epochs=epochs,steps_per_epoch=len(train_loader))
+            else:
+                scheduler = ReduceLROnPlateau(optimizer, factor=0.2, patience=3,verbose=True,mode='max')
 
+            
         for epoch in range(1, epochs + 1):
             print(f'Epoch {epoch}:')
             trn.train(model, self.device, train_loader, optimizer,epoch, train_accuracy, train_losses, l1_factor,scheduler,criterion,lrs,self.writer,grad_clip)
@@ -89,19 +96,24 @@ class TriggerEngine:
             self.writer.flush()
         return (plot_train_acc,train_losses,test_accuracy,test_losses)
     
-    def find_lr(self,model,train_loader, test_loader, start_lr, end_lr, num_iterations):
+    def find_lr(self,model,train_loader, test_loader, start_lr, end_lr):
+        
+        
+        lr_epochs = self.config['lr_finder']['lr_epochs']
+        num_iterations = len(test_loader) * lr_epochs
+
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.SGD(model.parameters(), lr=start_lr, momentum=0.90)
-        #optimizer = optim.Adam(model.parameters(), lr=0.1, weight_decay=1e-2)
+        optimizer = optim.SGD(model.parameters(), lr=start_lr, momentum=0.90, weight_decay=self.l2_factor)
         lr_finder = LRFinder(model, optimizer, criterion, device="cuda")
-        lr_finder.range_test(train_loader, val_loader=test_loader, end_lr=end_lr, num_iter=num_iterations, step_mode="linear")
+        lr_finder.range_test(train_loader, val_loader=test_loader, end_lr=end_lr, num_iter=num_iterations, step_mode="linear",diverge_th=50)
         
         # Plot
-        best_lr = lr_finder.plot(suggest_lr=True,skip_start=0, skip_end=0)
+        max_lr = lr_finder.history['lr'][lr_finder.history['loss'].index(lr_finder.best_loss)]
+        #max_lr = lr_finder.plot(suggest_lr=True,skip_start=0, skip_end=0)
 
         # Reset graph
         lr_finder.reset()
-        return best_lr[1]
+        return max_lr
     
         
     def save_experiment(self,model, experiment_name,path):
@@ -112,7 +124,7 @@ class TriggerEngine:
         result = summary(model, input_size=input_size)
         print(result)    
         
-    def wrong_predictions(self,model,test_loader):
+    def wrong_predictions(self,model,test_loader,num_img):
         wrong_images=[]
         wrong_label=[]
         correct_label=[]
@@ -131,24 +143,26 @@ class TriggerEngine:
                 wrong_predictions = list(zip(torch.cat(wrong_images),torch.cat(wrong_label),torch.cat(correct_label)))    
             print(f'Total wrong predictions are {len(wrong_predictions)}')
             
-            self.plot_misclassified(wrong_predictions)
+            self.plot_misclassified(wrong_predictions,num_img)
       
         return wrong_predictions
         
-    def plot_misclassified(self,wrong_predictions):
-        fig = plt.figure(figsize=(10,12))
+    def plot_misclassified(self,wrong_predictions,num_img):
+        fig = plt.figure(figsize=(15,12))
         fig.tight_layout()
-        mean,std = self.cifar_dataset.calculate_mean_std()
-        #mean,std = helper.calculate_mean_std("CIFAR10")
-        for i, (img, pred, correct) in enumerate(wrong_predictions[:20]):
+        mean,std = self.image_dataset.calculate_mean_std()
+        for i, (img, pred, correct) in enumerate(wrong_predictions[:num_img]):
             img, pred, target = img.cpu().numpy().astype(dtype=np.float32), pred.cpu(), correct.cpu()
             for j in range(img.shape[0]):
                 img[j] = (img[j]*std[j])+mean[j]
             
-            img = np.transpose(img, (1, 2, 0)) #/ 2 + 0.5
+            img = np.transpose(img, (1, 2, 0)) 
             ax = fig.add_subplot(5, 5, i+1)
+            fig.subplots_adjust(hspace=.5)
             ax.axis('off')
-            ax.set_title(f'\nactual : {self.class_names[target.item()]}\npredicted : {self.class_names[pred.item()]}',fontsize=10)  
+            self.class_names,_ = self.get_classes()
+            
+            ax.set_title(f'\nActual : {self.class_names[target.item()]}\nPredicted : {self.class_names[pred.item()]}',fontsize=10)  
             ax.imshow(img)  
           
         plt.show()
